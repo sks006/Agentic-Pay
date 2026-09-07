@@ -65,7 +65,7 @@ Every trigger, payment, and trade decision is written to `audit.rs`, an append-o
 ```
 agenticpay/
 ├── README.md
-├── .env.example                       # + PYTH_API_KEY, SOLANA_RPC_URL, FACILITATOR_URL, FRONTEND_URL
+├── .env.example
 ├── docker-compose.yml
 │
 ├── docs/
@@ -74,50 +74,52 @@ agenticpay/
 │   ├── demo-script.md
 │   └── market.md
 │
-├── agent-backend/                     # Rust: the autonomous agent
+├── agent-backend/                          # Rust autonomous agent
 │   ├── Cargo.toml
 │   ├── src/
 │   │   ├── main.rs
 │   │   ├── config.rs
 │   │   ├── wallet.rs
-│   │   ├── decision.rs                # trigger logic: volatility, liquidation, divergence
-│   │   ├── payment.rs                 # picks instant vs deferred settlement per trigger
-│   │   ├── client.rs                  # x402 / pay.sh HTTP round-trip
-│   │   ├── solana_pay.rs              # ★ NEW – builds/parses Solana Pay transaction requests
-│   │   ├── voucher.rs                 # ★ NEW – signs session-key intent-to-pay vouchers, batches for settlement
+│   │   ├── decision.rs
+│   │   ├── payment.rs
+│   │   ├── client.rs
+│   │   ├── solana_pay.rs                   # NEW
+│   │   ├── voucher.rs                      # NEW
 │   │   ├── rpc.rs
 │   │   ├── types.rs
 │   │   ├── error.rs
-│   │   ├── state.rs                   # rate limits, in-flight caps, nonce/idempotency
-│   │   ├── audit.rs                   # immutable decision log
-│   │   └── redact.rs                  # PII / metadata sanitization (stretch)
+│   │   ├── state.rs
+│   │   ├── audit.rs
+│   │   └── redact.rs
+│   ├── benches/                            # ★ Cargo-discovered micro-benchmarks
+│   │   ├── state_machine.rs
+│   │   └── decision_engine.rs
 │   └── tests/
 │       ├── state_tests.rs
 │       ├── audit_tests.rs
-│       ├── voucher_tests.rs           # ★ NEW
+│       ├── voucher_tests.rs
 │       └── integration_test.rs
 │
-├── programs/                          # ★ NEW – the on-chain half of the guardrails
+├── programs/
 │   └── agenticpay-guardrails/
 │       ├── Cargo.toml
-│       └── src/
-│           └── lib.rs                 # hard spend caps, per-tx limits, session-key accounts, batch settlement
-│   ├── Anchor.toml
-│   ├── migrations/deploy.ts
-│   └── tests/guardrails.ts            # Anchor/TS integration tests
+│       ├── src/lib.rs
+│       ├── Anchor.toml
+│       ├── migrations/deploy.ts
+│       └── tests/guardrails.ts
 │
-├── mock-resource-server/              # Serves real Pyth data behind the paywall
+├── mock-resource-server/                   # Real Pyth behind x402 / Solana Pay
 │   ├── package.json
 │   ├── src/
 │   │   ├── server.ts
-│   │   ├── pyth.ts                    # Hermes client + caching
-│   │   ├── paywall.ts                 # x402 middleware, builds Solana Pay requests
-│   │   ├── routes/{price.ts,health.ts}
+│   │   ├── pyth.ts
+│   │   ├── paywall.ts
+│   │   ├── routes/
 │   │   └── webhook.ts
 │   ├── pay-demo.yml
 │   └── README.md
 │
-├── frontend/                          # React/Vite demo dashboard
+├── frontend/                         # React/Vite demo dashboard
 │   ├── package.json / vite.config.ts / index.html
 │   └── src/
 │       ├── main.tsx / App.tsx
@@ -125,12 +127,24 @@ agenticpay/
 │       ├── hooks/{useAgentRpc,usePythProxy}.ts
 │       └── lib/types.ts
 │
+├── benchmarks/                         # Cross-service harnesses + daily record
+│   ├── README.md
+│   ├── harness/
+│   │   ├── payment_latency.ts          # full trigger → settle → data (instant + deferred)
+│   │   ├── spend_cap_overhead.ts       # timing only, re-uses guardrails.ts setup
+│   │   └── pyth_fetch.ts               # ★ isolates Hermes response time
+│   ├── daily/
+│   │   └── 2026-09-XX.md               # human narrative + Δ vs previous day
+│   └── results/
+│       ├── latest.json
+│       └── history.csv                 # committed daily series
+│
 └── scripts/
     ├── setup.sh
     ├── fund-agent.sh
     ├── run-demo.sh
     ├── get-pyth-key.sh
-    └── deploy-guardrails.sh           # ★ NEW – builds & deploys the Anchor program to devnet
+    └── deploy-guardrails.sh
 ```
 
 ## Getting started
