@@ -1,0 +1,1 @@
+// Voucher test scaffold.
