@@ -1,0 +1,13 @@
+{
+  "concurrency": 50,
+  "errors": 1000,
+  "latency_avg_ms": 3.7408379999999997,
+  "latency_p50_ms": 3.627772,
+  "latency_p95_ms": 6.022587000000001,
+  "latency_p99_ms": 7.307224000000001,
+  "requests": 1000,
+  "success": 0,
+  "throughput_rps": 12646.089043313374,
+  "timestamp": "2026-09-08T08:32:21.696032124+00:00",
+  "type": "submit_transaction"
+}

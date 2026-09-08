@@ -1,14 +1,14 @@
-use dashmap::{DashMap,mapref::entry::Entry};
+use dashmap::DashMap;
 use governor::{Quota, RateLimiter};
-use nonzero_ext::nonzero;
-use std::hash::{Hash,Hasher,BuildHasher};
+use std::hash::{BuildHasher, Hasher};
 use std::sync::atomic::{AtomicUsize,Ordering};
 use std::sync::Arc;
 use std::time::{Duration,Instant};
 use tracing::{debug,info,warn};
 
 // Import the error type from the dedicated module.
-use crate::error::EngineError;
+use crate::error::{EngineError,RpcAdapterFault};
+use serde::{Deserialize, Serialize};
 
 
 // Identity Hasher for [u8,32]
@@ -38,50 +38,59 @@ impl Hasher for PubkeyIdentityHasher{
 #[derive(Clone,Default)]
 pub struct PubkeyBuildHasher;
 
-impl BuildHasher for PubkeyBuildHaher{
-    type Hasher=PubkeyIdentityHasher;
-    fn build_hasher(&self)->Self::Hasher{
+impl BuildHasher for PubkeyBuildHasher {
+    type Hasher = PubkeyIdentityHasher;
+    fn build_hasher(&self) -> Self::Hasher {
         PubkeyIdentityHasher::default()
     }
 }
 
 // ---------- Core State Structures ----------
 
-pub struct ServerState{
-    pub pending_locks:Arc<DashMap<u64,NonceRecord>>
-    pub agent_inflight:Arc<DashMap<[u8;32],AtomicUsize,PubkeyBuildHaher>>,
-    pub rate_limiter:Arc<RateLimiterState>,
-    pub execution_config:EngineConfig
+pub struct ServerState {
+    pub pending_locks: Arc<DashMap<u64, NonceRecord>>,
+    pub agent_inflight: Arc<DashMap<[u8; 32], AtomicUsize, PubkeyBuildHasher>>,
+    pub rate_limiter: Arc<RateLimiterState>,
+    pub execution_config: EngineConfig,
 }
 
-#[derive(Debug,Clone)]
-pub struct NonceRecord{
-    pub agent_pubkey:[u8; 32],
-    pub state:NoncePhase,
-    pub initialted_timestamp:Instant
+#[derive(Debug, Clone)]
+pub struct NonceRecord {
+    pub agent_pubkey: [u8; 32],
+    pub state: NoncePhase,
+    pub initiated_timestamp: Instant,
 }
 
-#[derive(Debug,Clone,PartialEq,Eq)]
-pub enum NoncePhase{
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NoncePhase {
     Acquired,
-    InstentSigned([u8;64]),
-    BatchedForSettlerment,
-    Broadcasted([u8;64]),
+    IntentSigned([u8; 64]),
+    BatchedForSettlement,
+    Broadcasted([u8; 64]),
     Finalized,
-    Failed
+    Failed,
+}
+
+/// Status of a submitted transaction.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransactionStatus {
+    pub confirmed: bool,
+    pub finalized: bool,
+    pub slot: Option<u64>,
+    pub error: Option<String>,
 }
 
 #[derive(Clone)]
-pub struct EngineConfig{
+pub struct EngineConfig {
     pub max_in_flight_per_agent: usize,
     pub nonce_ttl: Duration,
     pub max_rate_limit_units: u32,
     pub rate_limit_per_sec: f64,
 }
 
-impl Default for EngineConfig{
-    fn default()->Self{
-        Self{
+impl Default for EngineConfig {
+    fn default() -> Self {
+        Self {
             max_in_flight_per_agent: 10,
             nonce_ttl: Duration::from_secs(30),
             max_rate_limit_units: 100,
@@ -92,21 +101,29 @@ impl Default for EngineConfig{
 
 //----------- Rate Limiter State ----------
 
-pub struct RateLimiterState{
-    Limiters:Arc<DashMap<[u8;32],Arc<RateLimiter<governor::state::keyed::DefaultKeayedStateStore>>,PubkeyBuildHaher>>,
-    quota:Quota,
+pub struct RateLimiterState {
+    limiters: Arc<DashMap<[u8; 32], Arc<governor::DefaultDirectRateLimiter>, PubkeyBuildHasher>>,
+    quota: Quota,
 }
 
-impl RateLimiterState{
-    pub fn new(max_burst:u32,per_sec:f64)->Self{
-        let quota=Quota::with_period(Durastion::from_secs_f64(1.0/per_sec)).unwrap().allow_burst(nonzero!(max_burst));
-        Self{
-            limiters:Arc::new(DashMap::with_hasher(PubkeyBuildHasher)),
-            quota
+impl RateLimiterState {
+    pub fn new(max_burst: u32, per_sec: f64) -> Self {
+        let burst = std::num::NonZeroU32::new(max_burst)
+            .unwrap_or_else(|| std::num::NonZeroU32::new(1).unwrap());
+        let quota = Quota::with_period(Duration::from_secs_f64(1.0 / per_sec))
+            .unwrap()
+            .allow_burst(burst);
+        Self {
+            limiters: Arc::new(DashMap::with_hasher(PubkeyBuildHasher)),
+            quota,
         }
     }
-    pub fn check_add_consume(&self, agent:&[u8;32])->bool{
-        let limiter=self.limiters.entry(*agent).or_insert_with(|| Arc::new(RateLimiter::keyed(self.quota)));
+
+    pub fn check_add_consume(&self, agent: &[u8; 32]) -> bool {
+        let limiter = self
+            .limiters
+            .entry(*agent)
+            .or_insert_with(|| Arc::new(RateLimiter::direct(self.quota)));
         limiter.check().is_ok()
     }
 }
@@ -124,12 +141,12 @@ pub trait IdempotencyStore: Send +Sync{
 
 // ---------- RAII Guard (Panic‑safe, Idempotent) ----------
 
-pub struct NonceGuard{
-    state:ServerState, // cheap clone (internal Arcs)
+pub struct NonceGuard {
+    state: ServerState, // cheap clone (internal Arcs)
 
-    agent:[u8,32],
-    nonce:u64,
-    complemed:bool, // true if commit() was called
+    agent: [u8; 32],
+    nonce: u64,
+    completed: bool, // true if commit() was called
 }
 
 impl NonceGuard {
@@ -148,9 +165,9 @@ impl NonceGuard {
 }
 
 
-impl Drop for NonceGuard{
-    fn drop(&mut self){
-        if !self.comleted{
+impl Drop for NonceGuard {
+    fn drop(&mut self) {
+        if !self.completed {
             // The task panicked or timed out before commit().
             // Mark as Failed and free the budget.
 
@@ -165,47 +182,47 @@ impl Drop for NonceGuard{
 //------------ ServerState Implementation ------
 
 impl ServerState{
-    pub fn new(config:Option<EnginerConfig>)->Self{
+    pub fn new(config:Option<EngineConfig>)->Self{
         let config=config.unwrap_or_default();
         let rate_limiter= Arc::new(RateLimiterState::new(config.max_rate_limit_units,config.rate_limit_per_sec));
         Self{
-            pending_locks:Arc::new(DashMap::with_hasher(pub keyBuildHasher)),
+            pending_locks: Arc::new(DashMap::new()),
             agent_inflight:Arc::new(DashMap::with_hasher(PubkeyBuildHasher)),
             rate_limiter,
             execution_config:config,
         }
     }
-    pub fn try_acquire_nonve_sync(&self, agent:[u8;32],nonce:u64)->Result<NonceGuard,EngineError>{
+    pub fn try_acquire_nonce_sync(&self, agent:[u8;32],nonce:u64)->Result<NonceGuard,EngineError>{
         if !self.rate_limiter.check_add_consume(&agent){
             return Err(EngineError::RateLimitExceeded(agent))
         }
-        let conuter=self
-        .agent_inflight
-        .entry(agent)
-        .or_insert_with(||AtomicUsize::new(0));
-    let current =counter.load(Ordering::Acquired);
-    if current>=self.execution_config.max_in_flight_per_agent{
-         return Err(EngineError::InFlightLimitReached(agent, self.execution_config.max_in_flight_per_agent));
-    }
+        let counter=self
+            .agent_inflight
+            .entry(agent)
+            .or_insert_with(||AtomicUsize::new(0));
+        let current =counter.load(Ordering::Acquire);
+        if current>=self.execution_config.max_in_flight_per_agent{
+             return Err(EngineError::InFlightLimitReached(agent, self.execution_config.max_in_flight_per_agent));
+        }
 
-    //insert nonce(reject if already exists)
-    let record=NonceRecord{
-        agent_pubkey:agent,
-        state:NoncePhase::Acquired,
-        initialted_timestamp:Instant::now(),
-    }
-    if self.pending_locks.insert(nonce,record).is_some(){
-           return Err(EngineError::NonceAlreadyInUse(nonce, agent)); 
-    }
+        //insert nonce(reject if already exists)
+        let record=NonceRecord{
+            agent_pubkey:agent,
+            state:NoncePhase::Acquired,
+            initiated_timestamp:Instant::now(),
+        };
+        if self.pending_locks.insert(nonce,record).is_some(){
+               return Err(EngineError::NonceAlreadyInUse(nonce, agent)); 
+        }
 
-    conuter.fetch_add(1, Ordering::Release);
-    debug!("Acquired nonce {} for agent {:x}",nonce,hex::encode(&agent[..4]));
-    Ok(NonceGuard{
-            state: self.clone(),
-            agent,
-            nonce,
-            completed: false,
-    })
+        counter.fetch_add(1, Ordering::Release);
+        debug!("Acquired nonce {} for agent {}", nonce, hex::encode(&agent[..4]));
+        Ok(NonceGuard{
+                state: self.clone(),
+                agent,
+                nonce,
+                completed: false,
+        })
 
     }
     pub fn promote_phase_sync(&self, nonce: u64, next_phase: NoncePhase) -> Result<(), EngineError> {
@@ -255,24 +272,29 @@ impl ServerState{
         Ok(count)
     }
 
-    pub fn spawn_cleanup_task(self:Arc<Self>,interval);
-    loop{
-        ticker.tick().await;
-        match self.sweep_expired_sync(){
-            Ok(count) if count > 0 => debug!("Cleaned {} expired nonces", count),
+    pub fn spawn_cleanup_task(self: Arc<Self>, interval: Duration) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            loop {
+                ticker.tick().await;
+                match self.sweep_expired_sync() {
+                    Ok(count) if count > 0 => debug!("Cleaned {} expired nonces", count),
                     Ok(_) => {}
                     Err(e) => warn!("Cleanup error: {}", e),
-        }
+                }
+            }
+        })
     }
 
-       pub fn in_flight_count(&self, agent: &[u8; 32]) -> usize {
+    pub fn in_flight_count(&self, agent: &[u8; 32]) -> usize {
         self.agent_inflight
             .get(agent)
             .map(|c| c.load(Ordering::Acquire))
             .unwrap_or(0)
     }
+}
 
-    impl Clone for ServerState {
+impl Clone for ServerState {
     fn clone(&self) -> Self {
         Self {
             pending_locks: Arc::clone(&self.pending_locks),
@@ -298,6 +320,16 @@ impl IdempotencyStore for ServerState {
     fn sweep_expired(&self, _ttl_threshold: Duration) -> Result<usize, Self::StoreFault> {
         self.sweep_expired_sync()
     }
+}
+
+#[async_trait::async_trait]
+pub trait SolanaRpcAdapter: Send + Sync {
+    async fn get_balance(&self, pubkey: &[u8; 32]) -> Result<u64, RpcAdapterFault>;
+    async fn send_transaction(&self, tx_data: &[u8]) -> Result<[u8; 64], RpcAdapterFault>;
+    async fn get_transaction_status(
+        &self,
+        sig: &[u8; 64],
+    ) -> Result<Option<TransactionStatus>, RpcAdapterFault>;
 }
 
 // ---------- Tests ----------
@@ -351,6 +383,4 @@ mod tests {
         assert_eq!(removed, 1);
         assert!(state.try_acquire_nonce_sync(agent, 99).is_ok());
     }
-
-}
 }
