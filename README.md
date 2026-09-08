@@ -86,6 +86,7 @@ agenticpay/
 │   │   ├── solana_pay.rs                   # NEW
 │   │   ├── voucher.rs                      # NEW
 │   │   ├── rpc.rs
+│   │   ├── solana_rpc.rs                   # NEW
 │   │   ├── types.rs
 │   │   ├── error.rs
 │   │   ├── state.rs
