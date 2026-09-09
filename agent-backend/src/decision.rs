@@ -8,7 +8,7 @@ use crate::error::SignalFault;
 
 // Pyth price feed data (from oracle).
 
-#[derive(Debug,Clone,Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 
 pub struct PythPriceFeed{
     pub price:i64,// Price, scaled by 10^expo
