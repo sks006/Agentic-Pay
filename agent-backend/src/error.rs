@@ -96,3 +96,14 @@ impl From<ClientError> for RpcAdapterFault {
         }
     }
 }
+
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum SignalFault {
+    #[error("Confidence interval too wide (risk threshold exceeded)")]
+    ConfidenceTooWide,
+    #[error("Expected profit margin is negative or below network fee")]
+    NegativeExpectedValue,
+    #[error("Network fee exceeds maximum allowed cap")]
+    FeeExceedsMaxCap,
+}

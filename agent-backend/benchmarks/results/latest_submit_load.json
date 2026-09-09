@@ -1,13 +1,13 @@
 {
   "concurrency": 50,
   "errors": 1000,
-  "latency_avg_ms": 3.7408379999999997,
-  "latency_p50_ms": 3.627772,
-  "latency_p95_ms": 6.022587000000001,
-  "latency_p99_ms": 7.307224000000001,
+  "latency_avg_ms": 2.8688770000000003,
+  "latency_p50_ms": 2.407444,
+  "latency_p95_ms": 8.44905,
+  "latency_p99_ms": 13.180971,
   "requests": 1000,
   "success": 0,
-  "throughput_rps": 12646.089043313374,
-  "timestamp": "2026-09-08T08:32:21.696032124+00:00",
+  "throughput_rps": 14726.07158051819,
+  "timestamp": "2026-09-09T03:18:55.681082767+00:00",
   "type": "submit_transaction"
 }

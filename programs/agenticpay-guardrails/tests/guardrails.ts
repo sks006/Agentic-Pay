@@ -1,1 +1,0 @@
-// Guardrails program test scaffold.
