@@ -8,10 +8,63 @@ use jsonrpsee::core::client::ClientT;
 use jsonrpsee::http_client::HttpClientBuilder;
 use jsonrpsee::rpc_params;
 use solana_sdk::transaction::VersionedTransaction;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::task::JoinSet;
+
+#[derive(Clone, Debug)]
+pub struct RpcRequestPayload {
+    pub agent_pubkey_hex: String,
+    pub nonce: u64,
+    pub tx_base64: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct PreComputedLoadMatrix {
+    pub payloads: Vec<RpcRequestPayload>,
+}
+
+pub trait PayloadMatrixGenerator {
+    type MatrixFault;
+
+    /// Allocates 1,000 mathematically distinct agent/nonce pairs into memory
+    /// BEFORE the benchmark timer initiates.
+    fn construct_matrix(
+        total_requests: usize,
+    ) -> Result<PreComputedLoadMatrix, Self::MatrixFault>;
+}
+
+pub struct DeterministicPayloadGenerator;
+
+impl PayloadMatrixGenerator for DeterministicPayloadGenerator {
+    type MatrixFault = anyhow::Error;
+
+    fn construct_matrix(
+        total_requests: usize,
+    ) -> Result<PreComputedLoadMatrix, Self::MatrixFault> {
+        let dummy_tx = VersionedTransaction::default();
+        let tx_bytes = bincode::serialize(&dummy_tx)?;
+        let tx_base64 = BASE64_STANDARD.encode(tx_bytes);
+
+        let mut payloads = Vec::with_capacity(total_requests);
+
+        for i in 0..total_requests {
+            let mut key_bytes = [0u8; 32];
+            let idx_bytes = ((i as u64) + 1).to_be_bytes();
+            key_bytes[24..32].copy_from_slice(&idx_bytes);
+
+            let agent_pubkey_hex = hex::encode(key_bytes);
+            let nonce = (i as u64) + 1;
+
+            payloads.push(RpcRequestPayload {
+                agent_pubkey_hex,
+                nonce,
+                tx_base64: tx_base64.clone(),
+            });
+        }
+
+        Ok(PreComputedLoadMatrix { payloads })
+    }
+}
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -28,8 +81,8 @@ struct Args {
     #[arg(long, default_value = "http://localhost:8545")]
     rpc_url: String,
 
-    /// Agent public key (Base58)
-    #[arg(long, default_value = "7Ec9tK1aP5A4pfnCbP1hJbX9qM7C2p8ZyzpXqgT5fLkK")]
+    /// Agent public key (optional fallback / override)
+    #[arg(long, default_value = "")]
     agent_pubkey: String,
 }
 
@@ -38,50 +91,44 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
     // Build JSON-RPC client
-    let client = HttpClientBuilder::default()
-        .build(&args.rpc_url)?;
+    let client = HttpClientBuilder::default().build(&args.rpc_url)?;
 
-    // A dummy transaction (just a placeholder; we just need a Base64 string)
-    // In reality, you would create a real VersionedTransaction.
-    // For load testing, we use a zero transaction (which will fail on-chain but
-    // still exercises the state engine and RPC layer).
-    let dummy_tx = VersionedTransaction::default();
-    let tx_bytes = bincode::serialize(&dummy_tx)?;
-    let tx_base64 = BASE64_STANDARD.encode(tx_bytes);
-
-    let agent_pubkey = args.agent_pubkey;
     let total_requests = args.requests;
     let concurrency = args.concurrency;
 
-    let nonce_counter = Arc::new(AtomicU64::new(1));
+    println!(
+        "📦 Pre-computing deterministic payload matrix ({} distinct agent/nonce pairs)...",
+        total_requests
+    );
+    let matrix = DeterministicPayloadGenerator::construct_matrix(total_requests)?;
+
+    // Partition payloads across workers before starting the timer to avoid in-thread allocations
+    let mut worker_payloads_list: Vec<Vec<RpcRequestPayload>> = (0..concurrency)
+        .map(|_| Vec::new())
+        .collect();
+
+    for (i, payload) in matrix.payloads.into_iter().enumerate() {
+        worker_payloads_list[i % concurrency].push(payload);
+    }
 
     println!("🚀 Starting load test on `submitTransaction`");
     println!("Concurrency: {}, Total requests: {}", concurrency, total_requests);
-    println!("Using agent: {}", agent_pubkey);
+    println!("Matrix size: {} pre-computed payloads", total_requests);
 
+    // Start benchmark timer ONLY after the payload vector is fully populated and partitioned
     let start = Instant::now();
     let mut join_set = JoinSet::new();
 
-    // Spawn workers
-    let requests_per_worker = total_requests / concurrency;
-    let remaining = total_requests % concurrency;
-
-    for i in 0..concurrency {
+    for worker_payloads in worker_payloads_list {
         let client = client.clone();
-        let tx_base64 = tx_base64.clone();
-        let agent_pubkey = agent_pubkey.clone();
-        let num_requests = requests_per_worker + if i < remaining { 1 } else { 0 };
-        let counter = Arc::clone(&nonce_counter);
-
         join_set.spawn(async move {
-            let mut results = Vec::with_capacity(num_requests);
-            for _ in 0..num_requests {
-                let nonce = counter.fetch_add(1, Ordering::Relaxed);
+            let mut results = Vec::with_capacity(worker_payloads.len());
+            for payload in worker_payloads {
                 let req_start = Instant::now();
                 let response: Result<String, _> = client
                     .request(
                         "agent_submitTransaction",
-                        rpc_params![tx_base64.clone(), agent_pubkey.clone(), nonce],
+                        rpc_params![payload.tx_base64, payload.agent_pubkey_hex, payload.nonce],
                     )
                     .await;
                 let req_duration = req_start.elapsed();
@@ -97,7 +144,7 @@ async fn main() -> anyhow::Result<()> {
     let mut error_count = 0;
 
     while let Some(result) = join_set.join_next().await {
-        for (duration, is_ok) in result.unwrap() {
+        for (duration, is_ok) in result? {
             all_latencies.push(duration);
             if is_ok {
                 success_count += 1;
@@ -125,7 +172,10 @@ async fn main() -> anyhow::Result<()> {
     println!("Requests: {}", total_requests);
     println!("Success: {}", success_count);
     println!("Errors: {}", error_count);
-    println!("Throughput: {:.0} req/s", total_requests as f64 / total_time.as_secs_f64());
+    println!(
+        "Throughput: {:.0} req/s",
+        total_requests as f64 / total_time.as_secs_f64()
+    );
     println!("Latencies:");
     println!("  Avg: {:?}", avg);
     println!("  P50: {:?}", p50);
@@ -155,11 +205,29 @@ async fn main() -> anyhow::Result<()> {
         "../benchmarks/results/latest_submit_load.json"
     };
 
-    std::fs::write(
-        output_path,
-        serde_json::to_string_pretty(&output)?,
-    )?;
+    std::fs::write(output_path, serde_json::to_string_pretty(&output)?)?;
 
     println!("✅ Results saved to {}", output_path);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn test_construct_matrix_uniqueness() {
+        let matrix = DeterministicPayloadGenerator::construct_matrix(1000).unwrap();
+        assert_eq!(matrix.payloads.len(), 1000);
+
+        let mut pubkeys = HashSet::new();
+        let mut nonces = HashSet::new();
+
+        for payload in matrix.payloads {
+            assert_eq!(payload.agent_pubkey_hex.len(), 64);
+            assert!(pubkeys.insert(payload.agent_pubkey_hex));
+            assert!(nonces.insert(payload.nonce));
+        }
+    }
 }

@@ -63,8 +63,15 @@ impl RpcServer {
         Self { state, rpc_client }
     }
 
-    /// Parse a Base58‑encoded public key into a byte array.
+    /// Parse a Base58‑encoded or 64-character hex public key into a byte array.
     fn parse_pubkey(&self, key: &str) -> Result<[u8; 32], EngineError> {
+        if key.len() == 64 {
+            if let Ok(bytes) = hex::decode(key) {
+                if let Ok(arr) = bytes.try_into() {
+                    return Ok(arr);
+                }
+            }
+        }
         Pubkey::from_str(key)
             .map(|pk| pk.to_bytes())
             .map_err(|_| EngineError::InvalidPubkey(key.to_string()))

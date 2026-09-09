@@ -1,5 +1,0 @@
-[provider]
-cluster = "Localnet"
-
-[programs.localnet]
-agenticpay_guardrails = "11111111111111111111111111111111"

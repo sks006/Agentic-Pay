@@ -1,4 +1,4 @@
-use dashmap::DashMap;
+use dashmap::{mapref::entry::Entry, DashMap};
 use governor::{Quota, RateLimiter};
 use std::hash::{BuildHasher, Hasher};
 use std::sync::atomic::{AtomicUsize,Ordering};
@@ -158,7 +158,9 @@ impl NonceGuard {
         self.state.promote_phase_sync(self.nonce, phase)?;
         // Free concurrency budget
         if let Some(counter) = self.state.agent_inflight.get(&self.agent) {
-            counter.fetch_sub(1, Ordering::Release);
+            let _ = counter.fetch_update(Ordering::Release, Ordering::Acquire, |v| {
+                Some(v.saturating_sub(1))
+            });
         }
         Ok(())
     }
@@ -173,7 +175,9 @@ impl Drop for NonceGuard {
 
             let _ =self.state.promote_phase_sync(self.nonce, NoncePhase::Failed);
             if let Some(counter)=self.state.agent_inflight.get(&self.agent){
-                counter.fetch_sub(1,Ordering::Release);
+                let _ = counter.fetch_update(Ordering::Release, Ordering::Acquire, |v| {
+                    Some(v.saturating_sub(1))
+                });
             }
         }
     }
@@ -205,14 +209,19 @@ impl ServerState{
              return Err(EngineError::InFlightLimitReached(agent, self.execution_config.max_in_flight_per_agent));
         }
 
-        //insert nonce(reject if already exists)
-        let record=NonceRecord{
-            agent_pubkey:agent,
-            state:NoncePhase::Acquired,
-            initiated_timestamp:Instant::now(),
+        // Insert nonce (reject if already exists without overwriting)
+        let record = NonceRecord {
+            agent_pubkey: agent,
+            state: NoncePhase::Acquired,
+            initiated_timestamp: Instant::now(),
         };
-        if self.pending_locks.insert(nonce,record).is_some(){
-               return Err(EngineError::NonceAlreadyInUse(nonce, agent)); 
+        match self.pending_locks.entry(nonce) {
+            Entry::Occupied(_) => {
+                return Err(EngineError::NonceAlreadyInUse(nonce, agent));
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(record);
+            }
         }
 
         counter.fetch_add(1, Ordering::Release);
@@ -242,14 +251,16 @@ impl ServerState{
         let ttl = self.execution_config.nonce_ttl;
         let now = Instant::now();
         let mut decrements = Vec::new();
+        let mut removed_count = 0;
 
         // Pass 1: Remove expired nonces and collect agents that need decrementing
         self.pending_locks.retain(|_nonce, record| {
             let expired = now.duration_since(record.initiated_timestamp) >= ttl;
             if expired {
-                // Only decrement if it was never successfully finalized/broadcasted
-                // (i.e., it's still Acquired or Failed)
-                if record.state == NoncePhase::Acquired || record.state == NoncePhase::Failed {
+                removed_count += 1;
+                // Only decrement if it was never committed or dropped
+                // (i.e. guard was leaked or timed out while still Acquired)
+                if record.state == NoncePhase::Acquired {
                     decrements.push(record.agent_pubkey);
                 }
                 false // remove from map
@@ -261,15 +272,16 @@ impl ServerState{
         // Pass 2: Decrement in-flight counters **outside** the retain lock
         for agent in decrements.iter() {
             if let Some(counter) = self.agent_inflight.get(agent) {
-                counter.fetch_sub(1, Ordering::Release);
+                let _ = counter.fetch_update(Ordering::Release, Ordering::Acquire, |v| {
+                    Some(v.saturating_sub(1))
+                });
             }
         }
 
-        let count = decrements.len();
-        if count > 0 {
-            info!("Cleaned {} expired nonces", count);
+        if removed_count > 0 {
+            info!("Cleaned {} expired nonces", removed_count);
         }
-        Ok(count)
+        Ok(removed_count)
     }
 
     pub fn spawn_cleanup_task(self: Arc<Self>, interval: Duration) -> tokio::task::JoinHandle<()> {
@@ -340,7 +352,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_acquire_and_commit() {
-        let state = Arc::new(ServerState::new(None));
+        let config = EngineConfig {
+            nonce_ttl: Duration::from_millis(50),
+            ..Default::default()
+        };
+        let state = Arc::new(ServerState::new(Some(config)));
         let agent = [1u8; 32];
 
         let guard = state.try_acquire_nonce_sync(agent, 42).unwrap();
@@ -363,7 +379,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_guard_drop_on_panic() {
-        let state = Arc::new(ServerState::new(None));
+        let config = EngineConfig {
+            nonce_ttl: Duration::from_millis(50),
+            ..Default::default()
+        };
+        let state = Arc::new(ServerState::new(Some(config)));
         let agent = [1u8; 32];
 
         {
@@ -377,10 +397,11 @@ mod tests {
         // but same nonce is still blocked
         assert!(state.try_acquire_nonce_sync(agent, 99).is_err());
 
-        // After sweep, it will be removed
+        // After sweep, both expired nonces (99 and 100) will be removed
         tokio::time::sleep(Duration::from_millis(100)).await;
         let removed = state.sweep_expired_sync().unwrap();
-        assert_eq!(removed, 1);
+        assert_eq!(removed, 2);
         assert!(state.try_acquire_nonce_sync(agent, 99).is_ok());
+        assert!(state.try_acquire_nonce_sync(agent, 100).is_ok());
     }
 }
