@@ -14,3 +14,4 @@ pub mod state;
 pub mod types;
 pub mod voucher;
 pub mod wallet;
+pub mod worker;

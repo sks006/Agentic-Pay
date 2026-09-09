@@ -46,6 +46,7 @@ dependencies = [
  "solana-client",
  "solana-rpc-client",
  "solana-sdk",
+ "solana-system-interface",
  "solana-transaction-status-client-types",
  "thiserror 1.0.69",
  "tokio",

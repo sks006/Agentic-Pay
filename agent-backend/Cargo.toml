@@ -59,6 +59,7 @@ env_logger = "0.11"
 
 # Time
 chrono = "0.4"
+solana-system-interface = "1.0"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["async_tokio"] }

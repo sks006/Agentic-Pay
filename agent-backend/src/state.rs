@@ -7,7 +7,8 @@ use std::time::{Duration,Instant};
 use tracing::{debug,info,warn};
 
 // Import the error type from the dedicated module.
-use crate::error::{EngineError,RpcAdapterFault};
+use crate::error::{EngineError, RpcAdapterFault};
+use crate::voucher::VoucherPayload;
 use serde::{Deserialize, Serialize};
 
 
@@ -59,6 +60,7 @@ pub struct NonceRecord {
     pub agent_pubkey: [u8; 32],
     pub state: NoncePhase,
     pub initiated_timestamp: Instant,
+    pub voucher: Option<VoucherPayload>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -164,6 +166,18 @@ impl NonceGuard {
         }
         Ok(())
     }
+
+    pub fn commit_with_voucher(mut self, phase: NoncePhase, voucher: VoucherPayload) -> Result<(), EngineError> {
+        self.completed = true;
+        self.state.promote_phase_with_voucher_sync(self.nonce, phase, voucher)?;
+        // Free concurrency budget
+        if let Some(counter) = self.state.agent_inflight.get(&self.agent) {
+            let _ = counter.fetch_update(Ordering::Release, Ordering::Acquire, |v| {
+                Some(v.saturating_sub(1))
+            });
+        }
+        Ok(())
+    }
 }
 
 
@@ -214,6 +228,7 @@ impl ServerState{
             agent_pubkey: agent,
             state: NoncePhase::Acquired,
             initiated_timestamp: Instant::now(),
+            voucher: None,
         };
         match self.pending_locks.entry(nonce) {
             Entry::Occupied(_) => {
@@ -244,6 +259,65 @@ impl ServerState{
         } else {
             Err(EngineError::NonceNotFound(nonce))
         }
+    }
+
+    pub fn promote_phase_with_voucher_sync(
+        &self,
+        nonce: u64,
+        next_phase: NoncePhase,
+        voucher: VoucherPayload,
+    ) -> Result<(), EngineError> {
+        if let Some(mut entry) = self.pending_locks.get_mut(&nonce) {
+            let record = entry.value_mut();
+            record.state = next_phase;
+            record.voucher = Some(voucher);
+            debug!("Nonce {} promoted to {:?} with voucher", nonce, record.state);
+            Ok(())
+        } else {
+            Err(EngineError::NonceNotFound(nonce))
+        }
+    }
+
+    /// Step 1: Extraction & Lock
+    /// Sweeps the DashMap and immediately transitions the voucher phase:
+    /// IntentSigned -> BatchedForSettlement.
+    /// This guarantees subsequent sweeps ignore them while in flight.
+    pub fn extract_and_lock_intent_vouchers(&self) -> Vec<VoucherPayload> {
+        let mut locked_vouchers = Vec::new();
+        for mut entry in self.pending_locks.iter_mut() {
+            let nonce = *entry.key();
+            let record = entry.value_mut();
+            if let NoncePhase::IntentSigned(sig) = record.state {
+                // Immediately transition to BatchedForSettlement to prevent duplicate sweeps
+                record.state = NoncePhase::BatchedForSettlement;
+                if let Some(ref v) = record.voucher {
+                    locked_vouchers.push(v.clone());
+                } else {
+                    let v = VoucherPayload {
+                        nonce,
+                        agent: record.agent_pubkey,
+                        provider: [0u8; 32],
+                        amount_lamports: 0,
+                        signature: sig,
+                        retry_count: 0,
+                    };
+                    record.voucher = Some(v.clone());
+                    locked_vouchers.push(v);
+                }
+            }
+        }
+        locked_vouchers
+    }
+
+    /// Marks a voucher as permanently Failed and frees the associated concurrency budget.
+    pub fn mark_voucher_failed(&self, nonce: u64, agent: &[u8; 32]) -> Result<(), EngineError> {
+        self.promote_phase_sync(nonce, NoncePhase::Failed)?;
+        if let Some(counter) = self.agent_inflight.get(agent) {
+            let _ = counter.fetch_update(Ordering::Release, Ordering::Acquire, |v| {
+                Some(v.saturating_sub(1))
+            });
+        }
+        Ok(())
     }
 
     /// Sweep expired nonces without cross-locking.
