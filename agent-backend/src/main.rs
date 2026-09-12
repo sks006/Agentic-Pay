@@ -3,11 +3,14 @@ use std::sync::Arc;
 use std::time::Duration;
 use jsonrpsee::server::ServerBuilder;
 use solana_client::nonblocking::rpc_client::RpcClient;
+use solana_sdk::pubkey::Pubkey;
+use solana_sdk::signature::{Keypair, Signer};
 
 use agent_backend::config::Config;
 use agent_backend::rpc::{AgentRpcServer, RpcServer};
 use agent_backend::solana_rpc::AsyncSolanaProvider;
 use agent_backend::state::{self, ServerState};
+use agent_backend::worker::{SettlementWorker, WorkerConfig};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -28,6 +31,35 @@ async fn main() -> anyhow::Result<()> {
     };
     let state = Arc::new(ServerState::new(Some(engine_config)));
     state.clone().spawn_cleanup_task(Duration::from_secs(10));
+
+    // Load agent keypair (from AGENT_SECRET_KEY env var or generate a dev keypair)
+    let agent_keypair = Arc::new(
+        std::env::var("AGENT_SECRET_KEY")
+            .ok()
+            .and_then(|s| Keypair::from_base58_string(&s).into())
+            .unwrap_or_else(Keypair::new),
+    );
+
+    // Configure and spawn the settlement worker daemon
+    let worker_config = WorkerConfig {
+        batch_interval: Duration::from_secs(10),
+        max_retries: 3,
+        retry_backoff_base: Duration::from_secs(2),
+        program_id: Pubkey::from_str_const("Grd1111111111111111111111111111111111111111"),
+        escrow_owner: agent_keypair.pubkey(),
+        fee_payer: Some(agent_keypair.pubkey()),
+    };
+
+    let worker = Arc::new(SettlementWorker::new(
+        state.clone(),
+        rpc_client.clone(),
+        worker_config,
+        agent_keypair.clone(),
+    ));
+
+    tokio::spawn(async move {
+        worker.run().await;
+    });
 
     let rpc_impl = RpcServer::new(state, rpc_client);
     let rpc_service = AgentRpcServer::into_rpc(rpc_impl);

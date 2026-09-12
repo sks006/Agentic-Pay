@@ -107,3 +107,17 @@ pub enum SignalFault {
     #[error("Network fee exceeds maximum allowed cap")]
     FeeExceedsMaxCap,
 }
+
+// ---------- Crypto-Economic Faults ----------
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum CryptoFault {
+    #[error("Invalid Ed25519 signature")]
+    InvalidSignature,
+    #[error("Voucher has expired")]
+    ExpiredVoucher,
+    #[error("Serialization fault: {0}")]
+    SerializationFault(String),
+    #[error("Signing fault: {0}")]
+    SigningFault(String),
+}
