@@ -59,7 +59,13 @@ export default function Settings() {
           <div>
             <Button
               variant={isPaused ? "cyber" : "destructive"}
-              onClick={() => setPaused(!isPaused)}
+              onClick={async () => {
+                try {
+                  await setPaused(!isPaused)
+                } catch (err) {
+                  console.error("Toggle pause error:", err)
+                }
+              }}
               className="text-xs font-semibold"
             >
               {isPaused ? "Deactivate Circuit Breaker (Resume Trading)" : "Engage Emergency Stop"}

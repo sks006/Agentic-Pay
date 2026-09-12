@@ -135,13 +135,51 @@ agenticpay/
 │   ├── pay-demo.yml
 │   └── README.md
 │
-├── frontend/                         # React/Vite demo dashboard
-│   ├── package.json / vite.config.ts / index.html
-│   └── src/
-│       ├── main.tsx / App.tsx
-│       ├── components/{AgentStatus,PaymentLog,PriceChart,DecisionPanel,LiveFeed,WalletConnect}.tsx
-│       ├── hooks/{useAgentRpc,usePythProxy}.ts
-│       └── lib/types.ts
+├──frontend/
+|    ├── package.json
+|    ├── vite.config.ts
+|    ├── index.html
+|    ├── components.json
+|    │
+|    └── src/
+|    |    ├── main.tsx
+|    |    ├── App.tsx
+|    |    ├── index.css
+|    |    │
+|    |    ├── components/
+|    |    │   ├── layout/
+|    |    │   │   ├── AppShell.tsx
+|    |    │   │   ├── Sidebar.tsx
+|    |    │   │   └── Topbar.tsx
+|    |    │   │
+|    |    │   ├── AgentStatus.tsx
+|    |    │   ├── PaymentLog.tsx
+|    |    │   ├── PriceChart.tsx
+|    |    │   ├── DecisionPanel.tsx
+|    |    │   ├── LiveFeed.tsx
+|    |    │   ├── WalletConnect.tsx
+|    |    │   └── StatCard.tsx
+|    |    │
+|    |    ├── pages/
+|    |    │   ├── Dashboard.tsx
+|    |    │   ├── Payments.tsx
+|    |    │   ├── Prices.tsx
+|    |    │   ├── Decisions.tsx
+|    |    │   └── Settings.tsx
+|    |    │
+|    |    ├── hooks/
+|    |    │   ├── useAgentRpc.ts
+|    |    │   └── usePythProxy.ts
+|    |    │
+|    |    ├── lib/
+|    |    │   ├── types.ts
+|    |    │   ├── api.ts
+|    |    │   ├── constants.ts
+|    |    │   └── utils.ts
+|    |    │
+|    |    └── components/
+|    |        └── ui/
+|    |            └── ...shadcn generated components
 │
 ├── benchmarks/                         # Cross-service harnesses + daily record
 │   ├── README.md

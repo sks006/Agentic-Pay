@@ -20,7 +20,11 @@ export default function Payments() {
     try {
       setSimulating(true)
       const vch = await simulatePayment(50_000)
-      setSelectedVoucherId(vch.id)
+      if (vch?.id) {
+        setSelectedVoucherId(vch.id)
+      }
+    } catch (err) {
+      console.error("Simulation failed:", err)
     } finally {
       setSimulating(false)
     }

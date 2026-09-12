@@ -216,7 +216,7 @@ export async function fetchAgentSnapshot(): Promise<AgentSnapshot> {
 
   // Update uptime and simulated tick
   mockState.agent.uptimeSeconds += 2
-  return { ...mockState }
+  return structuredClone(mockState)
 }
 
 /**
@@ -306,5 +306,5 @@ export async function triggerPaymentSimulation(amountLamports = 50_000): Promise
     timestamp: new Date().toISOString(),
   })
 
-  return newVoucher
+  return structuredClone(newVoucher)
 }
