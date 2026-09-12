@@ -1,34 +1,41 @@
-import { useEffect, useState } from "react"
-import type { PythPrice } from "@/lib/types"
-import { fetchPythPrice } from "@/lib/api"
+import { useEffect, useState, useMemo } from "react"
+import { useAppDispatch, useAppSelector } from "@/store"
+import { fetchPythPriceThunk, selectPythPrice, selectPythLoading } from "@/store"
 
 export function usePythProxy(symbol: string = "SOL") {
-  const [price, setPrice] = useState<PythPrice | null>(null)
+  const dispatch = useAppDispatch()
+  const upperSymbol = symbol.toUpperCase()
+
+  const priceSelector = useMemo(() => selectPythPrice(upperSymbol), [upperSymbol])
+  const loadingSelector = useMemo(() => selectPythLoading(upperSymbol), [upperSymbol])
+
+  const price = useAppSelector(priceSelector)
+  const loading = useAppSelector(loadingSelector)
+
   const [history, setHistory] = useState<Array<{ time: string; price: number; confidence: number }>>([])
-  const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     let active = true
 
-    async function loadPrice() {
+    const loadPrice = async () => {
       try {
-        const data = await fetchPythPrice(symbol)
-        if (active) {
-          setPrice(data)
+        const result = await dispatch(fetchPythPriceThunk(upperSymbol)).unwrap()
+        if (active && result?.data) {
           const nowStr = new Date().toLocaleTimeString([], {
             hour: "2-digit",
             minute: "2-digit",
             second: "2-digit",
           })
           setHistory((prev) => {
-            const next = [...prev, { time: nowStr, price: data.price, confidence: data.confidence }]
-            return next.slice(-20) // Keep last 20 tick points
+            const next = [
+              ...prev,
+              { time: nowStr, price: result.data.price, confidence: result.data.confidence },
+            ]
+            return next.slice(-20)
           })
         }
-      } finally {
-        if (active) {
-          setLoading(false)
-        }
+      } catch {
+        // Handled by Redux
       }
     }
 
@@ -39,7 +46,7 @@ export function usePythProxy(symbol: string = "SOL") {
       active = false
       window.clearInterval(interval)
     }
-  }, [symbol])
+  }, [dispatch, upperSymbol])
 
   return {
     price,
