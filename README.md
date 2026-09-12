@@ -101,13 +101,28 @@ agenticpay/
 │       ├── voucher_tests.rs
 │       └── integration_test.rs
 │
-├── programs/
-│   └── agenticpay-guardrails/
-│       ├── Cargo.toml
-│       ├── src/lib.rs
+├── programs/agenticpay-guardrails/
 │       ├── Anchor.toml
-│       ├── migrations/deploy.ts
-│       └── tests/guardrails.ts
+│       ├── Cargo.lock
+│       ├── Cargo.toml
+│       ├── migrations/
+│       │   └── deploy.ts
+│       ├── src/
+│       │   ├── lib.rs                     # Program entry, mod declarations, #[program]
+│       │   ├── accounts.rs                # All #[derive(Accounts)] contexts
+│       │   ├── constants.rs               # DOMAIN_SEPARATOR, CANONICAL_MESSAGE_LEN, SLOTS_PER_DAY
+│       │   ├── error.rs                   # GuardrailError
+│       │   ├── state.rs                   # Escrow, SessionKey, VoucherSettled event
+│       │   ├── verification.rs            # Ed25519 + canonical message verification
+│       │   └── instructions/
+│       │       ├── mod.rs
+│       │       ├── initialize_escrow.rs
+│       │       ├── set_paused.rs
+│       │       ├── register_session.rs
+│       │       └── batch_settle_vouchers.rs
+│       ├── target/
+│       └── tests/
+│           └── guardrails.ts
 │
 ├── mock-resource-server/                   # Real Pyth behind x402 / Solana Pay
 │   ├── package.json

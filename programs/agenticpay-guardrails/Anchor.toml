@@ -4,11 +4,14 @@
 resolution = true
 skip-lint = false
 
+[workspace]
+members = ["."]
+
 [programs.localnet]
-agenticpay_guardrails = "Guard11111111111111111111111111111111111111"
+agenticpay_guardrails = "Grd1111111111111111111111111111111111111111"
 
 [programs.devnet]
-agenticpay_guardrails = "Guard11111111111111111111111111111111111111"
+agenticpay_guardrails = "Grd1111111111111111111111111111111111111111"
 
 [registry]
 url = "https://api.apr.dev"
@@ -18,4 +21,4 @@ cluster = "Localnet"
 wallet = "~/.config/solana/id.json"
 
 [scripts]
-test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"
+test = "npx ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"

@@ -8,7 +8,7 @@ use tracing::{debug,info,warn};
 
 // Import the error type from the dedicated module.
 use crate::error::{EngineError, RpcAdapterFault};
-use crate::voucher::VoucherPayload;
+use crate::voucher::{current_timestamp_secs, VoucherPayload, DEFAULT_VOUCHER_TTL_SECS};
 use serde::{Deserialize, Serialize};
 
 
@@ -300,6 +300,8 @@ impl ServerState{
                         amount_lamports: 0,
                         signature: sig,
                         retry_count: 0,
+                        expires_at: current_timestamp_secs() + DEFAULT_VOUCHER_TTL_SECS,
+                        
                     };
                     record.voucher = Some(v.clone());
                     locked_vouchers.push(v);
